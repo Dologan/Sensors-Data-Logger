@@ -1,31 +1,36 @@
 package com.pjinkim.sensors_data_logger;
 
-import android.os.Environment;
+import android.content.Context;
 import android.util.Log;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
+import java.util.Locale;
 
 public class OutputDirectoryManager {
 
     // properties
     private final static String LOG_TAG = OutputDirectoryManager.class.getName();
 
+    private Context mContext;
     private String mOutputDirectory;
 
 
     // constructors
-    public OutputDirectoryManager(final String prefix, final String suffix) throws FileNotFoundException {
+    public OutputDirectoryManager(Context context, final String prefix, final String suffix) throws FileNotFoundException {
+        mContext = context;
         update(prefix, suffix);
     }
 
-    public OutputDirectoryManager(final String prefix) throws FileNotFoundException {
+    public OutputDirectoryManager(Context context, final String prefix) throws FileNotFoundException {
+        mContext = context;
         update(prefix);
     }
 
-    public OutputDirectoryManager() throws FileNotFoundException {
+    public OutputDirectoryManager(Context context) throws FileNotFoundException {
+        mContext = context;
         update();
     }
 
@@ -35,8 +40,8 @@ public class OutputDirectoryManager {
 
         // initialize folder name with current time information
         Calendar currentTime = Calendar.getInstance();
-        SimpleDateFormat formatter = new SimpleDateFormat("yyyyMMddhhmmss");
-        File externalDirectory = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        SimpleDateFormat formatter = new SimpleDateFormat("yyyyMMddHHmmss", Locale.US);
+        File externalDirectory = mContext.getExternalFilesDir(null);
         String folderName = formatter.format(currentTime.getTime());
 
         // combine prefix and suffix
@@ -48,9 +53,9 @@ public class OutputDirectoryManager {
         }
 
         // generate output directory folder
-        File outputDirectory = new File(externalDirectory.getAbsolutePath() + "/" + folderName);
+        File outputDirectory = new File(externalDirectory, folderName);
         if (!outputDirectory.exists()) {
-            if (!outputDirectory.mkdir()) {
+            if (!outputDirectory.mkdirs()) {
                 Log.e(LOG_TAG, "update: Cannot create output directory.");
                 throw new FileNotFoundException();
             }

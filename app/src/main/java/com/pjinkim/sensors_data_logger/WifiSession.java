@@ -1,15 +1,20 @@
 package com.pjinkim.sensors_data_logger;
 
+import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiManager;
+import android.os.Build;
 import android.util.Log;
 import android.os.Handler;
+import android.os.Looper;
 
 import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -25,11 +30,11 @@ public class WifiSession implements Runnable {
     // properties
     private final static String LOG_TAG = WifiSession.class.getName();
 
-    private final static int DEFAULT_INTERVAL = 1000;
+    private final static int DEFAULT_INTERVAL = 30000;
     private int mScanInterval = DEFAULT_INTERVAL;
 
     private MainActivity mContext;
-    private Handler mHandler = new Handler();
+    private Handler mHandler = new Handler(Looper.getMainLooper());
 
     private AtomicBoolean mIsRunning = new AtomicBoolean(false);
     private AtomicBoolean mIsWritingFile = new AtomicBoolean(false);
@@ -44,8 +49,18 @@ public class WifiSession implements Runnable {
             if (!mIsRunning.get()) {
                 return;
             }
-            mWifiManager.startScan();
-            List<ScanResult> results = mWifiManager.getScanResults();
+            if (!hasScanPermission()) {
+                Log.w(LOG_TAG, "onReceive: location permission not granted; scan results "
+                        + "are unavailable on Android 10 and later.");
+                return;
+            }
+            List<ScanResult> results;
+            try {
+                results = mWifiManager.getScanResults();
+            } catch (SecurityException e) {
+                Log.e(LOG_TAG, "onReceive: denied access to scan results", e);
+                return;
+            }
             Log.i(LOG_TAG, "onReceive: Scan result received. Number of AP: " + String.valueOf(results.size()));
 
             // save the wifi scan results to text file
@@ -60,7 +75,9 @@ public class WifiSession implements Runnable {
 
             // display Wifi scan results in main class
             float currentScanInterval = ((float) mScanInterval / 1000.0f);
-            mContext.displayWifiScanMeasurements(results.size(), currentScanInterval, results.get(0).SSID, results.get(0).level);
+            String firstSsid = results.isEmpty() ? "(no APs)" : results.get(0).SSID;
+            int firstLevel = results.isEmpty() ? 0 : results.get(0).level;
+            mContext.displayWifiScanMeasurements(results.size(), currentScanInterval, firstSsid, firstLevel);
         }
     };
 
@@ -88,7 +105,9 @@ public class WifiSession implements Runnable {
 
         // initialize text file stream
         mIsRunning.set(true);
-        mContext.registerReceiver(mScanReceiver, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
+        ContextCompat.registerReceiver(mContext, mScanReceiver,
+                new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION),
+                ContextCompat.RECEIVER_NOT_EXPORTED);
         if (streamFolder != null) {
             try {
                 mFileStreamer = new WifiResultStreamer(mContext, streamFolder);
@@ -115,7 +134,21 @@ public class WifiSession implements Runnable {
         mIsWritingFile.set(false);
         mIsRunning.set(false);
         mContext.unregisterReceiver(mScanReceiver);
-        mHandler.removeCallbacks(null);
+        mHandler.removeCallbacks(this);
+    }
+
+
+    /**
+     * Wi-Fi scan results are gated on location access: NEARBY_WIFI_DEVICES from API 33, and
+     * ACCESS_FINE_LOCATION before that. Without it getScanResults throws, or returns an empty
+     * list.
+     */
+    private boolean hasScanPermission() {
+        String permission = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+                ? Manifest.permission.NEARBY_WIFI_DEVICES
+                : Manifest.permission.ACCESS_FINE_LOCATION;
+        return ContextCompat.checkSelfPermission(mContext, permission)
+                == PackageManager.PERMISSION_GRANTED;
     }
 
 
@@ -123,7 +156,10 @@ public class WifiSession implements Runnable {
         if (mWifiManager.startScan()) {
             Log.i(LOG_TAG, "singleScan: Scan request sent.");
         } else {
-            Log.i(LOG_TAG, "singleScan: Scan request failed.");
+            // Since API 28 the platform throttles foreground apps to 4 scans per 2 minutes.
+            // Cached results still arrive via the receiver, they are just older than requested.
+            Log.w(LOG_TAG, "singleScan: Scan request rejected (likely platform scan throttling). "
+                    + "Cached results will still be delivered.");
         }
     }
 
@@ -131,7 +167,12 @@ public class WifiSession implements Runnable {
     @Override
     public void run() {
         if (!mWifiManager.isWifiEnabled()) {
-            mWifiManager.setWifiEnabled(true);
+            // Apps cannot toggle Wi-Fi from API 29 onward; the user has to do it.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                mContext.showToast("Wi-Fi is off — scanning is paused.");
+            } else {
+                mWifiManager.setWifiEnabled(true);
+            }
         }
         singleScan();
         if (mIsRunning.get()) {
