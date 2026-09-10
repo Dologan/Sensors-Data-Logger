@@ -1,14 +1,13 @@
 package com.pjinkim.sensors_data_logger;
 
 import android.content.Context;
-import android.content.Intent;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
-import android.net.Uri;
 import android.os.Build;
-import android.os.Environment;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.util.Log;
 
 import java.io.BufferedWriter;
@@ -30,6 +29,11 @@ public class IMUSession implements SensorEventListener {
 
     private MainActivity mContext;
     private SensorManager mSensorManager;
+
+    // Thirteen sensors at SENSOR_DELAY_GAME used to deliver on the main thread, where each
+    // callback then did blocking file I/O. Both now run here instead.
+    private HandlerThread mSensorThread;
+    private Handler mSensorHandler;
     private HashMap<String, Sensor> mSensors = new HashMap<>();
     private float mInitialStepCount = -1;
     private FileStreamer mFileStreamer = null;
@@ -67,6 +71,10 @@ public class IMUSession implements SensorEventListener {
         mSensors.put("magnetic_rv", mSensorManager.getDefaultSensor(Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR));
         mSensors.put("step", mSensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER));
         mSensors.put("pressure", mSensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE));
+
+        mSensorThread = new HandlerThread("IMUSession-sensors");
+        mSensorThread.start();
+        mSensorHandler = new Handler(mSensorThread.getLooper());
         registerSensors();
     }
 
@@ -74,13 +82,30 @@ public class IMUSession implements SensorEventListener {
     // methods
     public void registerSensors() {
         for (Sensor eachSensor : mSensors.values()) {
-            mSensorManager.registerListener(this, eachSensor, SensorManager.SENSOR_DELAY_GAME);
+            // Not every device reports every sensor; getDefaultSensor returns null for the rest.
+            if (eachSensor == null) {
+                continue;
+            }
+            mSensorManager.registerListener(this, eachSensor, SensorManager.SENSOR_DELAY_GAME, mSensorHandler);
         }
     }
 
     public void unregisterSensors() {
         for (Sensor eachSensor : mSensors.values()) {
+            if (eachSensor == null) {
+                continue;
+            }
             mSensorManager.unregisterListener(this, eachSensor);
+        }
+    }
+
+    /** Stops the sensor delivery thread. Call from the activity's onDestroy. */
+    public void release() {
+        unregisterSensors();
+        if (mSensorThread != null) {
+            mSensorThread.quitSafely();
+            mSensorThread = null;
+            mSensorHandler = null;
         }
     }
 
@@ -130,7 +155,7 @@ public class IMUSession implements SensorEventListener {
 
             // copy accelerometer calibration file to the streaming folder
             try {
-                File acceCalibFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) + "/acce_calib.txt");
+                File acceCalibFile = new File(mContext.getExternalFilesDir(null), "acce_calib.txt");
                 File outAcceCalibFile = new File(mFileStreamer.getOutputFolder() + "/acce_calib.txt");
                 if (acceCalibFile.exists()) {
                     FileInputStream istr = new FileInputStream(acceCalibFile);
@@ -140,10 +165,6 @@ public class IMUSession implements SensorEventListener {
                     ichn.transferTo(0, ichn.size(), ochn);
                     istr.close();
                     ostr.close();
-
-                    Intent scanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
-                    scanIntent.setData(Uri.fromFile(outAcceCalibFile));
-                    mContext.sendBroadcast(scanIntent);
                 }
             } catch (IOException e) {
                 mContext.showToast("Error occurs when copying accelerometer calibration text files.");

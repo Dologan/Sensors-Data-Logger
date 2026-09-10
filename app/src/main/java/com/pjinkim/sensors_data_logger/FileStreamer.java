@@ -1,8 +1,6 @@
 package com.pjinkim.sensors_data_logger;
 
 import android.content.Context;
-import android.content.Intent;
-import android.net.Uri;
 import android.util.Log;
 
 import java.io.BufferedWriter;
@@ -52,11 +50,12 @@ public class FileStreamer {
     private BufferedWriter createFile(final String path, final String timeHeader) throws IOException {
 
         File file = new File(path);
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new IOException("Cannot create parent directory: " + parent);
+        }
         BufferedWriter writer = new BufferedWriter((new FileWriter(file)));
 
-        Intent scanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
-        scanIntent.setData(Uri.fromFile(file));
-        mContext.sendBroadcast(scanIntent);
         if ((timeHeader != null) && (timeHeader.length() != 0)) {
             writer.append(timeHeader);
             writer.flush();

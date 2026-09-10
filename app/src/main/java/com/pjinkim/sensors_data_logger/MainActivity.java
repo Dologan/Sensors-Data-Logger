@@ -6,7 +6,9 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.util.Log;
 import android.view.View;
@@ -18,6 +20,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -30,21 +33,36 @@ public class MainActivity extends AppCompatActivity implements WifiSession.WifiS
     private final static String LOG_TAG = MainActivity.class.getName();
 
     private final static int REQUEST_CODE_ANDROID = 1001;
-    private static String[] REQUIRED_PERMISSIONS = new String[] {
-            Manifest.permission.READ_PHONE_STATE,
-            Manifest.permission.WRITE_EXTERNAL_STORAGE,
-            Manifest.permission.ACCESS_WIFI_STATE,
-            Manifest.permission.CHANGE_WIFI_STATE,
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.ACCESS_FINE_LOCATION
-    };
+
+    /**
+     * Runtime permissions vary by API level, so this cannot be a constant array.
+     * ACCESS_WIFI_STATE and CHANGE_WIFI_STATE are install-time permissions and are never
+     * requested at runtime; READ_PHONE_STATE was requested but is not used anywhere in the app.
+     * WRITE_EXTERNAL_STORAGE is not grantable from API 29 onward, and asking for it there used to
+     * make {@link #onRequestPermissionsResult} finish the activity on every launch.
+     */
+    private static String[] requiredPermissions() {
+        ArrayList<String> permissions = new ArrayList<>();
+        permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES);
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            permissions.add(Manifest.permission.ACTIVITY_RECOGNITION);
+        }
+        return permissions.toArray(new String[0]);
+    }
 
     private IMUConfig mConfig = new IMUConfig();
     private IMUSession mIMUSession;
     private WifiSession mWifiSession;
     private BatterySession mBatterySession;
 
-    private Handler mHandler = new Handler();
+    private Handler mHandler = new Handler(Looper.getMainLooper());
     private AtomicBoolean mIsRecording = new AtomicBoolean(false);
     private PowerManager.WakeLock mWakeLock;
 
@@ -95,8 +113,9 @@ public class MainActivity extends AppCompatActivity implements WifiSession.WifiS
     @Override
     protected void onResume() {
         super.onResume();
-        if (!hasPermissions(this, REQUIRED_PERMISSIONS)) {
-            requestPermissions(REQUIRED_PERMISSIONS, REQUEST_CODE_ANDROID);
+        String[] required = requiredPermissions();
+        if (!hasPermissions(this, required)) {
+            requestPermissions(required, REQUEST_CODE_ANDROID);
         }
         updateConfig();
     }
@@ -113,10 +132,11 @@ public class MainActivity extends AppCompatActivity implements WifiSession.WifiS
         if (mIsRecording.get()) {
             stopRecording();
         }
-        if (mWakeLock.isHeld()) {
+        if (mWakeLock != null && mWakeLock.isHeld()) {
             mWakeLock.release();
         }
-        mIMUSession.unregisterSensors();
+        // release() unregisters and also stops the sensor delivery thread.
+        mIMUSession.release();
         super.onDestroy();
     }
 
@@ -155,7 +175,7 @@ public class MainActivity extends AppCompatActivity implements WifiSession.WifiS
         // output directory for text files
         String outputFolder = null;
         try {
-            OutputDirectoryManager folder = new OutputDirectoryManager(mConfig.getFolderPrefix(), mConfig.getSuffix());
+            OutputDirectoryManager folder = new OutputDirectoryManager(this, mConfig.getFolderPrefix(), mConfig.getSuffix());
             outputFolder = folder.getOutputDirectory();
             mConfig.setOutputFolder(outputFolder);
         } catch (IOException e) {
@@ -272,15 +292,16 @@ public class MainActivity extends AppCompatActivity implements WifiSession.WifiS
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String permissions[], int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode != REQUEST_CODE_ANDROID) {
             return;
         }
 
-        for (int grantResult : grantResults) {
-            if (grantResult == PackageManager.PERMISSION_DENIED) {
-                showToast("Permission not granted");
-                finish();
-                return;
+        for (int i = 0; i < grantResults.length; i++) {
+            if (grantResults[i] == PackageManager.PERMISSION_DENIED) {
+                Log.w(LOG_TAG, "onRequestPermissionsResult: denied " + permissions[i]);
+                showToast("Permission denied: " + permissions[i]
+                        + ". Streams needing it will be skipped.");
             }
         }
     }
